@@ -1,0 +1,931 @@
+---
+title: "Principal Component Analysis with MLB Batting Data"
+subtitle: "A lesson using the Lahman baseball database"
+author: ""
+format:
+  html:
+    toc: true
+    code-fold: false
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup}
+library(tidyverse)
+library(Lahman)
+```
+
+## Lesson goals
+
+In this lesson, we use Major League Baseball batting data to learn how
+principal component analysis (PCA) can summarize many related
+quantitative variables.
+
+## 1. Baseball in simple terms
+
+Baseball is a game between two teams. One team bats and tries to score
+runs; the other team fields and tries to record outs. A batter can reach
+base by getting a hit, receiving a walk, or being hit by a pitch. The
+batter and other runners advance around four bases. Reaching home plate
+scores a run.
+
+An individual player-season is one player's statistics for one year. The
+Lahman data may contain several rows for a player in the same year if
+the player changed teams. We combine those rows so each analysis row
+represents one player in one season.
+
+## 2. Offensive statistics in simple terms
+
+### Counting statistics
+
+Counting statistics record how many times an event happened. Examples
+include:
+
+- `H`: hits
+- `HR`: home runs
+- `R`: runs scored
+- `RBI`: runs batted in
+- `BB`: walks
+- `SB`: stolen bases
+
+Counting statistics are strongly affected by playing time. A player who
+plays 162 games usually has more hits than an equally productive player
+who plays 60 games.
+
+### Rate statistics
+
+Rate statistics divide an event by an opportunity. They help us compare
+players who had different amounts of playing time.
+
+- `BA` (batting average) = hits divided by at-bats
+- `OBP` (on-base percentage) = times reaching base divided by the
+  selected denominator
+- `SLG` (slugging percentage) = total bases divided by at-bats
+- `HR_rate` = home runs divided by plate appearances
+
+PCA works well here with rates because we want to study how players
+produced, rather than simply how long they played.
+
+## PCA concepts: what PCA does
+
+PCA is a way to replace many related variables with a smaller number of
+new variables called principal components.
+
+Imagine that we measure a player using several batting rates. Many of
+those rates are correlated: players with high home-run rates may also
+have high slugging percentages and RBI rates. PCA looks for a new
+direction through the data that captures as much variation as possible.
+
+### A simple two-variable example
+
+Suppose we measure only two characteristics:
+
+- power: a player's home-run tendency;
+- contact: a player's ability to get hits.
+
+If these two variables tend to increase together, the first component
+might look approximately like:
+
+$$PC1 = 0.70(\text{power}) + 0.70(\text{contact})$$
+
+This component measures a general offensive dimension: players high in
+both variables receive high PC1 scores.
+
+The second component might look approximately like:
+
+$$PC2 = 0.70(\text{power}) - 0.70(\text{contact})$$
+
+This component contrasts power with contact. A player with much more
+power than contact will score high on PC2, while a player with much more
+contact than power will score low on PC2.
+
+The exact coefficients are calculated by PCA. The coefficients are
+called loadings, and the score for one player is found by multiplying
+the player's standardized variables by those loadings and adding the
+results.
+
+```{r}
+example_data <- tibble(
+  power = c(1, 2, 3, 4, 5),
+  contact = c(1.2, 2.1, 2.8, 4.2, 5.1)
+)
+
+example_pca <- prcomp(
+  example_data,
+  center = TRUE,
+  scale. = TRUE
+)
+
+example_pca$rotation
+example_pca$x
+
+# The two loading vectors are orthogonal.
+sum(example_pca$rotation[, 1] * example_pca$rotation[, 2])
+```
+
+The final value is approximately zero. That is how we can see the
+orthogonality of the two component directions.
+
+### Why do we center and scale?
+
+Centering subtracts the mean from every variable:
+
+$$x_{\text{centered}} = x - \bar{x}$$
+
+After centering, each variable has an average of zero. PCA then
+describes how observations vary around the center of the data.
+
+Scaling divides each centered variable by its standard deviation:
+
+$$x_{\text{scaled}} =
+\frac{x - \bar{x}}{\text{standard deviation}(x)}$$
+
+After scaling, each variable has a standard deviation of one.
+
+This matters because batting variables are measured on different scales.
+For example, BA is usually between 0 and 1, while HR_rate is much
+smaller and RBI_rate may have a different spread. Without scaling, a
+variable with the largest numerical spread could dominate PCA simply
+because of its units.
+
+In this lesson, scale. = TRUE means that prcomp() centers and scales the
+original rates before calculating the components. Later, we create
+z-scores within each year. Those variables are already standardized
+within year, so we do not scale them a second time.
+
+### Why are the components orthogonal?
+
+PCA chooses PC1 first, pointing in the direction that explains the most
+variation. PC2 is then chosen to explain as much of the remaining
+variation as possible while being perpendicular to PC1. Additional
+components continue this process.
+
+Orthogonality means the components are uncorrelated in the data used to
+fit the PCA. It does not mean that the original batting statistics are
+unrelated. In fact, PCA is useful partly because the original variables
+are related.
+
+Each component is a linear combination of all the variables included in
+the analysis:
+
+$$PC1 = w_1x_1 + w_2x_2 + \cdots + w_px_p$$
+
+The rotation matrix shows the weights (w) or loadings. The x matrix in
+the PCA result contains each player-season's coordinates, called scores,
+on those new axes.
+
+## 3. Load the baseball data
+
+The `Lahman` package contains historical Major League Baseball data.
+Install the packages once if they are not already installed.
+
+```{r}
+# Install once if needed:
+# install.packages(c("tidyverse", "Lahman"))
+
+library(tidyverse)
+library(Lahman)
+
+glimpse(Batting)
+```
+
+## 4. Create one row per player-season
+
+We identify the counting statistics that should be added when a player
+played for more than one team during the same year.
+
+```{r}
+counting_variables <- c(
+  "G", "AB", "R", "H", "X2B", "X3B", "HR",
+  "RBI", "SB", "CS", "BB", "SO", "IBB",
+  "HBP", "SH", "SF", "GIDP"
+)
+
+batting_season <- Batting |>
+  filter(yearID >= 1900) |>
+  group_by(playerID, yearID) |>
+  summarize(
+    across(
+      all_of(counting_variables),
+      ~ sum(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  ) |>
+  filter(AB >= 200)
+```
+
+The `AB >= 200` filter gives us players with a substantial number of
+at-bats. It reduces the chance that a few plate appearances create
+extreme rates.
+
+## 5. Add player position
+
+`Batting` does not contain a simple primary-position variable. The
+`Fielding` table records positions, so we select the position with the
+most fielding appearances for each player-season.
+
+```{r}
+player_position <- Fielding |>
+  filter(yearID >= 1900) |>
+  group_by(playerID, yearID, POS) |>
+  summarize(
+    fielding_games = sum(G, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  group_by(playerID, yearID) |>
+  slice_max(fielding_games, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  transmute(
+    playerID,
+    yearID,
+    Position = POS
+  )
+
+batting_season <- batting_season |>
+  left_join(player_position, by = c("playerID", "yearID")) |>
+  mutate(Position = replace_na(Position, "Unknown"))
+```
+
+Some players may have multiple positions or no recorded fielding
+position. This lesson assigns the position with the most fielding
+appearances.
+
+## 6. Create plate appearances and batting rates
+
+We use this approximation for plate appearances:
+
+$$PA = AB + BB + HBP + SH + SF$$
+
+We calculate traditional rates and event rates per plate appearance.
+
+```{r}
+batting_season <- batting_season |>
+  mutate(
+    PA = AB + BB + HBP + SH + SF,
+
+    # Traditional rates
+    BA = H / AB,
+    OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+    SLG = (H + X2B + 2 * X3B + 3 * HR) / AB,
+
+    # Uncomment if you want OPS in the analysis.
+    # OPS = OBP + SLG,
+
+    # Event rates per plate appearance
+    R_rate = R / PA,
+    X2B_rate = X2B / PA,
+    X3B_rate = X3B / PA,
+    HR_rate = HR / PA,
+    RBI_rate = RBI / PA,
+    SB_rate = SB / PA,
+    BB_rate = BB / PA,
+    SO_rate = SO / PA
+
+    # Optional variables. Add a comma after SO_rate if enabling these:
+    # ,CS_rate = CS / PA
+    # ,IBB_rate = IBB / PA
+    # ,HBP_rate = HBP / PA
+    # ,SH_rate = SH / PA
+    # ,SF_rate = SF / PA
+    # ,GIDP_rate = GIDP / PA
+  ) |>
+  filter(if_all(where(is.numeric), is.finite))
+```
+
+The commented-out variables are optional choices. PCA is affected by
+which variables we include, so those choices should be documented.
+
+## 7. Choose the variables for PCA
+
+We carry along identifying variables separately. They identify players
+and help us interpret PCA results, but they are not used to calculate
+the components.
+
+```{r}
+rate_variable_names <- c(
+  "BA", "OBP", "SLG",
+  "R_rate", "X2B_rate", "X3B_rate",
+  "HR_rate", "RBI_rate", "SB_rate",
+  "BB_rate", "SO_rate"
+)
+
+analysis_data <- batting_season |>
+  left_join(
+    People |>
+      transmute(
+        playerID,
+        player_name = paste(nameFirst, nameLast)
+      ),
+    by = "playerID"
+  ) |>
+  select(
+    any_of(c("playerID", "player_name", "yearID", "Position")),
+    all_of(rate_variable_names)
+  )
+
+analysis_data |>
+  select(any_of(c("playerID", "player_name", "yearID", "Position"))) |>
+  slice_head(n = 10)
+```
+
+## 8. Run PCA using the original rates
+
+PCA finds new axes that are weighted combinations of the original
+variables. PC1 explains the greatest amount of variation; PC2 explains
+the greatest remaining amount, subject to being perpendicular to PC1.
+
+Because the variables use different scales, we center and standardize
+them inside `prcomp()`.
+
+```{r}
+rate_variables <- analysis_data |>
+  select(all_of(rate_variable_names)) |>
+  select(where(~ sd(.x, na.rm = TRUE) > 0))
+
+pc_rates <- prcomp(
+  rate_variables,
+  center = TRUE,
+  scale. = TRUE
+)
+
+summary(pc_rates)
+pc_rates$rotation
+```
+
+The `rotation` table contains the loadings. A large positive loading
+means the variable contributes positively to a component. A large
+negative loading means it contributes in the opposite direction. The
+sign of a PCA component is arbitrary: multiplying an entire component by
+-1 describes the same pattern.
+
+```{r}
+rate_scores <- as_tibble(pc_rates$x) |>
+  bind_cols(
+    analysis_data |>
+      select(any_of(c("playerID", "player_name", "yearID", "Position")))
+  )
+
+rate_scores |>
+  select(any_of(c("player_name", "yearID", "Position", "PC1", "PC2"))) |>
+  slice_head(n = 10)
+
+ggplot(rate_scores, aes(PC1, PC2)) +
+  geom_point(alpha = 0.30) +
+  theme_minimal() +
+  labs(
+    title = "MLB Player-Seasons Using Batting-Rate PCA",
+    x = "Principal Component 1",
+    y = "Principal Component 2"
+  )
+```
+
+## 9. Normalize rates within each baseball year
+
+Baseball changes over time. Rules, equipment, training, ballparks,
+player populations, and strategies can all change. A batting average or
+home-run rate from 1920 should not automatically be compared with the
+same raw rate from 2000.
+
+To compare players with the players of their own era, we calculate a
+z-score within each year:
+
+$$z = \frac{\text{player rate} - \text{year average}}{\text{year standard deviation}}$$
+
+A value of 2 means the player was about two within-year standard
+deviations above that year's average for that statistic.
+
+```{r}
+within_year_z <- function(x) {
+  x_mean <- mean(x, na.rm = TRUE)
+  x_sd <- sd(x, na.rm = TRUE)
+
+  if (is.na(x_sd) || x_sd == 0) {
+    rep(0, length(x))
+  } else {
+    (x - x_mean) / x_sd
+  }
+}
+
+z_rate_data <- analysis_data |>
+  group_by(yearID) |>
+  mutate(
+    across(
+      all_of(rate_variable_names),
+      within_year_z,
+      .names = "z_{.col}"
+    )
+  ) |>
+  ungroup()
+
+z_rate_variable_names <- paste0("z_", rate_variable_names)
+
+z_rate_variables <- z_rate_data |>
+  select(all_of(z_rate_variable_names)) |>
+  select(where(~ sd(.x, na.rm = TRUE) > 0))
+
+pc_z_rates <- prcomp(
+  z_rate_variables,
+  center = TRUE,
+  scale. = FALSE
+)
+
+summary(pc_z_rates)
+pc_z_rates$rotation
+
+z_rate_scores <- as_tibble(pc_z_rates$x) |>
+  bind_cols(
+    z_rate_data |>
+      select(any_of(c("playerID", "player_name", "yearID", "Position")))
+  )
+```
+
+Because the rates have already been standardized within year, we do not
+scale them again. We still center the columns overall before calculating
+PCA.
+
+```{r}
+ggplot(z_rate_scores, aes(PC1, PC2, color = yearID)) +
+  geom_point(alpha = 0.40) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(
+    title = "Era-Normalized Batting PCA",
+    subtitle = "Each rate is standardized relative to its own baseball year",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Year"
+  )
+```
+
+## 10. Add Hall of Fame status
+
+Hall of Fame status is not used as an input to PCA. It is a label used
+to examine whether Hall of Fame players occupy different parts of PCA
+space.
+
+```{r}
+hof_players <- HallOfFame |>
+  filter(inducted == "Y") |>
+  distinct(playerID)
+
+z_rate_scores <- z_rate_scores |>
+  mutate(
+    HOF = if_else(
+      playerID %in% hof_players$playerID,
+      "Hall of Fame",
+      "Not Hall of Fame"
+    )
+  )
+
+table(z_rate_scores$HOF)
+
+ggplot(z_rate_scores, aes(PC1, PC2, color = HOF)) +
+  geom_point(alpha = 0.35) +
+  theme_minimal() +
+  labs(
+    title = "Era-Normalized PCA by Hall of Fame Status",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Status"
+  )
+```
+
+### Optional: run a separate PCA using Hall of Fame player-seasons
+
+This is different from coloring the same PCA by Hall of Fame status. The
+PCA below is calculated using only Hall of Fame players, so its axes
+should not be directly compared with the all-player axes.
+
+```{r}
+hof_z_data <- z_rate_data |>
+  filter(playerID %in% hof_players$playerID)
+
+hof_z_variables <- hof_z_data |>
+  select(all_of(z_rate_variable_names)) |>
+  select(where(~ sd(.x, na.rm = TRUE) > 0))
+
+pc_hof <- prcomp(
+  hof_z_variables,
+  center = TRUE,
+  scale. = FALSE
+)
+
+summary(pc_hof)
+pc_hof$rotation
+
+hof_scores <- as_tibble(pc_hof$x) |>
+  bind_cols(
+    hof_z_data |>
+      select(any_of(c("playerID", "player_name", "yearID", "Position")))
+  )
+
+ggplot(hof_scores, aes(PC1, PC2, color = Position)) +
+  geom_point(alpha = 0.45) +
+  theme_minimal() +
+  labs(
+    title = "PCA Using Hall of Fame Player-Seasons Only",
+    x = "Hall of Fame PC1",
+    y = "Hall of Fame PC2",
+    color = "Position"
+  )
+```
+
+## 11. Compare PC1 and PC2 by year and position
+
+The following charts show how the PCA space changes over time and how
+different positions are distributed in that space.
+
+```{r}
+ggplot(z_rate_scores, aes(PC1, PC2, color = yearID)) +
+  geom_point(alpha = 0.35) +
+  facet_wrap(~ Position) +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(
+    title = "Era-Normalized PCA by Year and Position",
+    x = "PC1",
+    y = "PC2",
+    color = "Year"
+  )
+
+ggplot(z_rate_scores, aes(x = Position, y = PC1, fill = Position)) +
+  geom_boxplot(show.legend = FALSE, outlier.alpha = 0.15) +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "PC1 Distribution by Position",
+    x = "Position",
+    y = "PC1"
+  )
+
+ggplot(z_rate_scores, aes(x = Position, y = PC2, fill = Position)) +
+  geom_boxplot(show.legend = FALSE, outlier.alpha = 0.15) +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "PC2 Distribution by Position",
+    x = "Position",
+    y = "PC2"
+  )
+```
+
+### Position centers in PCA space
+
+This plot shows the average PC1 and PC2 score for each position. It is a
+summary; it does not mean every player at that position is similar.
+
+```{r}
+position_centers <- z_rate_scores |>
+  group_by(Position) |>
+  summarize(
+    mean_PC1 = mean(PC1, na.rm = TRUE),
+    mean_PC2 = mean(PC2, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+ggplot(position_centers, aes(mean_PC1, mean_PC2, label = Position)) +
+  geom_hline(yintercept = 0, color = "gray80") +
+  geom_vline(xintercept = 0, color = "gray80") +
+  geom_point(size = 3, color = "steelblue") +
+  geom_text(nudge_y = 0.12, check_overlap = TRUE) +
+  theme_minimal() +
+  labs(
+    title = "Average PCA Location by Position",
+    x = "Average PC1",
+    y = "Average PC2"
+  )
+```
+
+## 12. Find extreme and near-zero player-seasons
+
+The largest PC score is not automatically the best player. It means that
+the player-season has a strong positive value on that component. We need
+the loadings to understand what the component represents.
+
+Here, closest to zero means closest to zero on one component. It does
+not mean the player was average in every individual statistic.
+
+```{r}
+get_pc_examples <- function(data, component, n = 20) {
+  scores <- data |>
+    select(
+      any_of(c("playerID", "player_name", "yearID", "Position", "HOF")),
+      all_of(component)
+    ) |>
+    rename(score = all_of(component))
+
+  list(
+    highest = scores |>
+      arrange(desc(score)) |>
+      slice_head(n = n) |>
+      mutate(category = "Highest"),
+
+    lowest = scores |>
+      arrange(score) |>
+      slice_head(n = n) |>
+      mutate(category = "Lowest"),
+
+    closest_to_zero = scores |>
+      mutate(distance_from_zero = abs(score)) |>
+      arrange(distance_from_zero) |>
+      slice_head(n = n) |>
+      select(-distance_from_zero) |>
+      mutate(category = "Closest to zero")
+  )
+}
+
+pc1_examples <- get_pc_examples(z_rate_scores, "PC1", n = 20)
+pc2_examples <- get_pc_examples(z_rate_scores, "PC2", n = 20)
+
+all_pc_examples <- bind_rows(
+  pc1_examples$highest |> mutate(component = "PC1"),
+  pc1_examples$lowest |> mutate(component = "PC1"),
+  pc1_examples$closest_to_zero |> mutate(component = "PC1"),
+  pc2_examples$highest |> mutate(component = "PC2"),
+  pc2_examples$lowest |> mutate(component = "PC2"),
+  pc2_examples$closest_to_zero |> mutate(component = "PC2")
+) |>
+  select(
+    component,
+    category,
+    any_of(c("player_name", "playerID", "yearID", "Position", "HOF")),
+    score
+  )
+
+all_pc_examples
+```
+
+For example, the six individual tables are available as follows:
+
+```{r}
+pc1_examples$highest
+pc1_examples$lowest
+pc1_examples$closest_to_zero
+
+pc2_examples$highest
+pc2_examples$lowest
+pc2_examples$closest_to_zero
+```
+
+## 13. How to interpret this analysis
+
+PCA is primarily an exploratory and dimensionality-reduction method. It
+can help us:
+
+- summarize many correlated batting variables with two or three
+  components;
+- visualize player-seasons in a two-dimensional chart;
+- identify players with similar statistical profiles;
+- discover which statistics move together;
+- create compact predictors for a later model.
+
+PCA does not prove that a player is better, does not establish
+causation, and does not guarantee that PC1 has a meaningful baseball
+interpretation. Inspect the loadings, compare explained variance, and
+use baseball knowledge to interpret the patterns.
+
+## 14. Salary and PC1 comparison
+
+The Lahman package includes a Salaries table beginning in 1985. A player
+can have more than one salary record in a season if the player changed
+teams, so we add those records to obtain one total salary per
+player-season.
+
+We use the latest season available in both the batting and salary data.
+
+```{r}
+last_season <- min(
+  max(batting_season$yearID),
+  max(Salaries$yearID)
+)
+
+last_season
+```
+
+```{r}
+salary_by_season <- Salaries |>
+  filter(yearID == last_season) |>
+  group_by(playerID, yearID) |>
+  summarize(
+    salary = sum(salary, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+salary_scores <- bind_rows(
+  rate_scores |>
+    filter(yearID == last_season) |>
+    select(playerID, player_name, yearID, Position, PC1) |>
+    mutate(model = "Original-rate PCA"),
+  z_rate_scores |>
+    filter(yearID == last_season) |>
+    select(playerID, player_name, yearID, Position, PC1) |>
+    mutate(model = "Era-normalized PCA")
+) |>
+  left_join(salary_by_season, by = c("playerID", "yearID")) |>
+  filter(!is.na(salary), salary > 0) |>
+  mutate(log_salary = log10(salary))
+
+salary_scores
+```
+
+Salary is strongly right-skewed, so the graph uses a logarithmic salary
+axis. This makes it easier to see players at both the low and high ends.
+
+```{r}
+ggplot(salary_scores, aes(salary, PC1, color = model)) +
+  geom_point(alpha = 0.65) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_x_log10(labels = scales::label_dollar()) +
+  facet_wrap(~ model) +
+  theme_minimal() +
+  labs(
+    title = paste("PC1 and Salary in", last_season),
+    subtitle = "Salary is shown on a logarithmic scale",
+    x = "Total annual salary",
+    y = "PC1",
+    color = "PCA model"
+  )
+```
+
+We can calculate a correlation for each model. Because a correlation is
+sensitive to outliers, it is useful to compare the ordinary correlation
+with the correlation between PC1 and log salary.
+
+```{r}
+salary_correlations <- salary_scores |>
+  group_by(model) |>
+  summarize(
+    n = n(),
+    correlation_salary = cor(PC1, salary, use = "complete.obs"),
+    correlation_log_salary = cor(PC1, log_salary, use = "complete.obs"),
+    .groups = "drop"
+  )
+
+salary_correlations
+```
+
+This is an association, not evidence that PCA scores cause salaries.
+Salary also reflects playing time, position, age, experience, team
+finances, negotiating history, injuries, and many other factors. The PCA
+score is based only on the batting rates selected earlier.
+
+## 15. Compare top and bottom PC1 player-seasons
+
+The original-rate PCA compares raw rate patterns across the entire
+historical period. The era-normalized PCA compares each player with the
+players from the same year. Therefore, the top player in the second
+model represents someone who was especially strong relative to that
+player's era.
+
+```{r}
+get_pc1_extremes <- function(data, model_name, n = 20) {
+  bind_rows(
+    data |>
+      arrange(desc(PC1)) |>
+      slice_head(n = n) |>
+      mutate(category = "Top PC1"),
+    data |>
+      arrange(PC1) |>
+      slice_head(n = n) |>
+      mutate(category = "Bottom PC1")
+  ) |>
+    mutate(model = model_name) |>
+    select(
+      model,
+      category,
+      any_of(c("player_name", "playerID", "yearID", "Position", "HOF")),
+      PC1
+    )
+}
+
+pc1_original_extremes <- get_pc1_extremes(
+  rate_scores,
+  "Original-rate PCA"
+)
+
+pc1_z_extremes <- get_pc1_extremes(
+  z_rate_scores,
+  "Era-normalized PCA"
+)
+
+pc1_comparison <- bind_rows(
+  pc1_original_extremes,
+  pc1_z_extremes
+)
+
+pc1_comparison
+```
+
+To focus only on the top and bottom five from each model:
+
+```{r}
+pc1_comparison |>
+  group_by(model, category) |>
+  slice_head(n = 5) |>
+  ungroup()
+```
+
+Interpret the results using the loadings:
+
+- A top PC1 player has a strong positive combination of the statistics
+  with positive PC1 loadings.
+- A bottom PC1 player has a strong negative combination of those
+  statistics.
+- A top player in the era-normalized model was especially unusual
+  compared with that player's contemporaries.
+- The two models may identify different players because the original
+  model is influenced by differences between baseball eras.
+
+## 16. Salary, PC1, and possible value
+
+This section uses salary as a rough measure of how highly the player was
+valued by their team. It is not a perfect measure of player quality.
+Salary is also affected by experience, contracts, position, injuries,
+and the player's reputation.
+
+The first table shows the highest-paid player-seasons in the latest
+season available. It lists PC1 from both models:
+
+- Original-rate PCA: compares the player's rates across all seasons.
+- Era-normalized PCA: compares the player's rates with other players in
+  the same season.
+
+```{r}
+highest_salary_players <- salary_scores |>
+  arrange(desc(salary)) |>
+  group_by(model) |>
+  slice_head(n = 20) |>
+  ungroup() |>
+  select(
+    model,
+    player_name,
+    playerID,
+    yearID,
+    Position,
+    salary,
+    PC1
+  )
+
+highest_salary_players
+```
+
+A player with a high salary but a low PC1 score may be an established
+player who had a below-average season. A low PC1 score does not prove
+that the player was bad overall; it describes that player-season
+relative to the variables and comparison group used in the PCA.
+
+```{r}
+high_salary_low_pc1 <- salary_scores |>
+  filter(PC1 < 0) |>
+  arrange(desc(salary)) |>
+  group_by(model) |>
+  slice_head(n = 20) |>
+  ungroup() |>
+  select(
+    model,
+    player_name,
+    playerID,
+    yearID,
+    Position,
+    salary,
+    PC1
+  )
+
+high_salary_low_pc1
+```
+
+Now we look for possible high-performing, lower-paid player-seasons. The
+threshold PC1 \> 2.2 identifies player-seasons with unusually high PC1
+scores. We then sort those player-seasons from lowest salary to highest
+salary.
+
+```{r}
+low_salary_high_pc1 <- salary_scores |>
+  filter(PC1 > 2.2) |>
+  group_by(model) |>
+  arrange(salary, .by_group = TRUE) |>
+  slice_head(n = 20) |>
+  ungroup() |>
+  select(
+    model,
+    player_name,
+    playerID,
+    yearID,
+    Position,
+    salary,
+    PC1
+  )
+
+low_salary_high_pc1
+```
+
+These are not automatically bargains. A strong PC1 score may reflect
+only the batting statistics included in this analysis. A complete
+salary-value analysis would also consider playing time, defense,
+baserunning, age, injuries, contract year, and future performance.

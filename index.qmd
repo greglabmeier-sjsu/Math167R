@@ -1,0 +1,22 @@
+---
+title: "Math 167R"
+subtitle: "Programming with R"
+---
+
+# Math 167R
+
+Welcome to Math 167R.
+
+This site contains lecture notes, projects, data, and other materials for the course.
+
+## Lectures
+
+Course lecture materials will be available here.
+
+## Projects
+
+Course projects and supporting materials will be available here.
+
+## Data
+
+Datasets used throughout the course will be available here.
