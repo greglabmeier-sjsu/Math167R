@@ -1,0 +1,11 @@
+---
+title: "Lectures"
+---
+
+# Course Lectures
+
+Lecture notes, examples, and R code for Math 167R.
+
+## Fall 2026
+
+- [Class 24 — Principal Component Analysis](Class%2024%20-%20MLB%20PCA/)
